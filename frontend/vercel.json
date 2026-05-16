@@ -1,0 +1,6 @@
+{
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "env": {
+    "REACT_APP_API_URL": "https://YOUR_RENDER_BACKEND_URL"
+  }
+}
