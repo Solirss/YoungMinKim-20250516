@@ -1,6 +1,6 @@
 {
   "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
   "env": {
-    "REACT_APP_API_URL": "https://YOUR_RENDER_BACKEND_URL"
+    "REACT_APP_API_URL": "https://youngminkim-20250516.onrender.com"
   }
 }
