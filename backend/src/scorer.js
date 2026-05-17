@@ -11,12 +11,16 @@
  * [브랜드파 신호]
  *   +2  동일 브랜드 반복 클릭 (같은 브랜드 상품 2회 이상)
  *   +2  프리미엄 상품 클릭 (시장 평균가 130% 이상 상품)
- *   +2  고평점 상품 클릭 (평점 4.7 이상 — 브랜드 신뢰도 직접 신호)
  *   +1  시장 평균가 이상 상품 클릭 (보조 신호)
  *
  * [용량파 신호]
  *   +1  대용량 상품 클릭 (다나와 상품 대부분이 대용량이라 가중치 낮춤)
  *   +2  저단가 상품 선택 (시장 평균 단가의 80% 이하)
+ *
+ * 평점(highRating) 신호는 성향 판별에서 제외:
+ *   저단가 + 고평점 상품(자취생 인기템 등)이 흔해, 평점을 브랜드 신호로 쓰면
+ *   용량파 유저까지 brandScore가 쌓여 mixed/brand로 오분류됨.
+ *   평점은 scoreProductsWithGPT의 입력으로만 활용.
  *
  * Cold Start: totalClicks 3 미만 → "unknown" (가중치 합 아닌 실제 클릭 수 기준)
  *
@@ -39,7 +43,6 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
  *   @param {string[]} clickedBrands       - 클릭한 브랜드 목록
  *   @param {Object}   brandClickCounts    - { [brand]: clickCount } 브랜드별 클릭 횟수
  *   @param {number}   premiumClicks       - 프리미엄 상품(시장 평균 130% 이상) 클릭 수
- *   @param {number}   highRatingClicks    - 고평점(4.7+) 상품 클릭 수 (다나와 HTML에서 평점 수집 확인됨)
  *   @param {number}   avgAboveClicks      - 시장 평균가 이상 상품 클릭 수 (보조 신호)
  *   @param {number}   bulkClicks          - 대용량 상품 클릭 수
  *   @param {number}   lowUnitPriceClicks  - 저단가(평균 80% 이하) 상품 클릭 수
@@ -50,7 +53,6 @@ function detectPersonaType(userLog) {
     clickedBrands = [],
     brandClickCounts = {},
     premiumClicks = 0,
-    highRatingClicks = 0,
     avgAboveClicks = 0,
     bulkClicks = 0,
     lowUnitPriceClicks = 0,
@@ -67,8 +69,8 @@ function detectPersonaType(userLog) {
   const brandScore =
     repeatBrandClicks * 2 +  // 브랜드 반복 클릭 (강한 신호)
     premiumClicks * 2 +      // 프리미엄 상품 클릭 (강한 신호)
-    highRatingClicks * 2 +   // 고평점 상품 클릭 (강한 신호 — 평점 수집 복원)
     avgAboveClicks * 1;      // 평균가 이상 클릭 (보조 신호)
+  // 평점(highRating)은 의도적으로 제외 — 저단가 + 고평점 케이스에서 오분류 유발
 
   // ── 용량파 점수 계산 ──
   // bulkClicks는 다나와 상품 대부분이 대용량이라 가중치 1로 평탄화 (자동 쏠림 방지)
@@ -100,7 +102,7 @@ function detectPersonaType(userLog) {
  * @param {Array}  products    - 상품 배열 (priceHistory, marketAvgPricePerUnit 등 포함)
  * @param {Object} userLog     - 유저 행동 로그
  * @param {string} personaType - 판별된 성향 타입
- * @returns {{ products: Array, scoreSource: "gpt"|"local"|"none" }}
+ * @returns {{ products: Array, scoreSource: "gpt"|"error"|"none", error?: string }}
  */
 async function scoreProductsWithGPT(products, userLog, personaType) {
   // Cold Start인 경우 GPT 점수 산출 없이 null 반환
@@ -215,123 +217,30 @@ tooltip 규칙: 25자 이내, 핵심 수치 2개 포함 (예: "최저가 대비 
     return { products: scoredProducts, scoreSource: "gpt" };
 
   } catch (err) {
-    // ── 로컬 폴백 ──
+    // ── GPT 실패 처리 ──
     // OpenAI API 실패 케이스:
     //   - API 키 미설정 / 잔액 부족
     //   - Rate limit
     //   - JSON 파싱 실패 (GPT가 룰을 안 따른 경우)
     //   - 네트워크 타임아웃
-    // 어느 쪽이든 화면을 비우는 것보다 로컬 점수가 낫다는 판단으로 자동 폴백
-    // scoreSource: "local"이 응답에 포함돼 프론트 콘솔에서 폴백 발생 여부 추적 가능
-    console.error("GPT 점수 산출 실패, 로컬 폴백:", err.message);
+    //
+    // 의도적으로 로컬 폴백을 두지 않음:
+    //   결정론적 산식은 GPT가 잡아내는 맥락(상품명·브랜드 등)을 못 보고,
+    //   유저가 "이상한 점수가 같은 화면에 섞이는" 경험을 더 싫어함.
+    //   차라리 점수를 비우고 "AI 점수 산출 실패"를 명시하는 게 신뢰 측면에서 우월.
+    // → 상품은 점수 없이(valueScore: null) 반환하고, scoreSource: "error"로 표시.
+    //   프론트는 이 신호를 받으면 안내 배너 + 카드는 일반 표시로 처리.
+    console.error("GPT 점수 산출 실패:", err.message);
     const scoredProducts = products.map((p) => ({
       ...p,
-      valueScore: calcLocalScore(p, personaType),
-      scoreTooltip: getLocalTooltip(p, personaType),
+      valueScore: null,
+      scoreTooltip: null,
     }));
-    return { products: scoredProducts, scoreSource: "local" };
-  }
-}
-
-/**
- * GPT 실패 시 로컬 점수 계산
- *
- * 결정론적인 산식으로 0~99 점수를 산출합니다.
- * GPT만큼 미묘한 판단은 못 하지만, 핵심 신호(가격 타이밍 또는 단가)는 정확히 반영.
- *
- * 공통 구조:
- *   - 핵심 점수(0~79) + 신뢰도 가산점(0~25) → cap 99
- *   - 핵심 점수 상한을 79로 두는 이유: trustScore(최대 25)와 합쳐도 100을 안 넘게 설계
- *
- * 성향별 핵심 점수:
- *   brand/mixed: 가격 타이밍 (현재가가 3달 최저가에 얼마나 가까운가)
- *   volume:      단가 절약률 (시장 평균 단가 대비 얼마나 저렴한가)
- */
-function calcLocalScore(product, personaType) {
-  // ── 신뢰도 점수 (trustScore, 0~25점) ──
-  // 리뷰 수에 log10 스케일을 적용한 이유:
-  //   리뷰가 100개에서 1000개로 늘면 의미가 크지만, 1만에서 10만은 차이가 미미
-  //   → 선형(개수 그대로 점수)이면 메가 히트 상품에만 점수가 쏠림
-  //   → log10으로 평탄화: 100개→10점, 1000개→15점, 1만개→17점, 3만개→15점(cap)
-  // 30000을 기준으로 정규화한 이유:
-  //   다나와에서 가장 많은 리뷰 상품(아리엘, 하기스 등)이 대략 2만~3만 리뷰 수준
-  //   → 이 정도가 사실상 상한이라고 가정하고 분모로 사용
-  const reviewScore = Math.min(20, Math.round((Math.log10(product.reviews + 1) / Math.log10(30000)) * 15));
-  // 평점 보너스: 4.7+ 면 강한 신뢰 신호, 4.0+는 약한 신호, 그 미만은 0
-  // 평점이 0(다나와 파싱 실패)인 경우는 4.0 미만 조건에 걸려 자동 0점 가산
-  const ratingBonus = product.rating >= 4.7 ? 5 : product.rating >= 4.0 ? 2 : 0;
-  const trustScore = reviewScore + ratingBonus;
-
-  if (personaType === "brand" || personaType === "mixed") {
-    // ── 브랜드/복합형: 가격 타이밍 기준 ──
-    // priceHistory가 없으면 "정보 부족"으로 중립 50점 + 신뢰도만 적용
-    const history = product.priceHistory || [];
-    if (!history.length) return Math.min(99, 50 + trustScore);
-
-    const prices = history.map((h) => h.price);
-    const minPrice = Math.min(...prices);
-    const maxPrice = Math.max(...prices);
-    const range = maxPrice - minPrice || 1; // 0 나눗셈 방지 (가격 변동 없으면 분모 1로)
-
-    // position: 0이면 현재가가 3달 최저가(구매 최적 타이밍), 1이면 3달 최고가(꼭지)
-    const position = (product.price - minPrice) / range;
-    // (1 - position) * 79:
-    //   현재가 = 최저가일 때 → position 0 → 79점 (최고 타이밍)
-    //   현재가 = 최고가일 때 → position 1 → 0점 (사면 안 됨)
-    // 79를 상한으로 두는 이유: trustScore와 합쳐도 99를 안 넘게 설계 보존
-    const timingScore = Math.round((1 - position) * 79);
-    return Math.min(99, Math.max(0, timingScore + trustScore));
-
-  } else {
-    // ── 용량파: 단가 절약률 기준 ──
-    // pricePerUnit 또는 시장 평균 단가가 없으면 비교 불가 → 중립 50점 폴백
-    if (!product.pricePerUnit || !product.marketAvgPricePerUnit) {
-      return Math.min(99, 50 + trustScore);
-    }
-    // ratio: 시장 평균 단가 ÷ 이 상품 단가
-    //   ratio = 1: 평균과 동일
-    //   ratio = 2: 평균의 절반 가격 (매우 저렴)
-    //   ratio < 1: 평균보다 비쌈
-    const ratio = product.marketAvgPricePerUnit / product.pricePerUnit;
-    // ratio * 55:
-    //   평균(ratio=1) → 55점
-    //   절반 가격(ratio=2) → 110점 → cap 79로 잘림
-    //   평균보다 비싸면(ratio=0.7) → 38점 (감점 효과)
-    // 79를 상한으로 두는 이유: trustScore와 합쳐도 99를 안 넘게
-    const valueScore = Math.round(Math.min(ratio * 55, 79));
-    return Math.min(99, Math.max(0, valueScore + trustScore));
-  }
-}
-
-/**
- * 로컬 점수에 대한 툴팁 생성
- * 브랜드파: 가격 타이밍 + 리뷰 수 표시
- * 용량파: 단가 절약률 + 리뷰 수 표시
- */
-function getLocalTooltip(product, personaType) {
-  const reviewStr = product.reviews > 1000
-    ? `리뷰 ${(product.reviews / 1000).toFixed(1)}만개`
-    : `리뷰 ${product.reviews}개`;
-
-  if (personaType === "brand" || personaType === "mixed") {
-    const history = product.priceHistory || [];
-    if (!history.length) return `가격 정보 없음 · ${reviewStr}`;
-    const minPrice = Math.min(...history.map((h) => h.price));
-    const diff = Math.round(((product.price - minPrice) / minPrice) * 100);
-    const priceStr = diff <= 2 ? "3달 최저가" : `최저가 대비 +${diff}%`;
-    return `${priceStr} · ${reviewStr}`;
-  } else {
-    if (!product.pricePerUnit || !product.marketAvgPricePerUnit) {
-      return `단가 정보 없음 · ${reviewStr}`;
-    }
-    const saving = Math.round(
-      ((product.marketAvgPricePerUnit - product.pricePerUnit) / product.marketAvgPricePerUnit) * 100
-    );
-    const priceStr = saving > 0
-      ? `평균 대비 단가 ${saving}% 저렴`
-      : saving < 0 ? `평균 대비 단가 ${Math.abs(saving)}% 비쌈`
-      : "시장 평균 단가";
-    return `${priceStr} · ${reviewStr}`;
+    return {
+      products: scoredProducts,
+      scoreSource: "error",
+      error: err.message || "GPT 점수 산출에 실패했습니다.",
+    };
   }
 }
 

@@ -343,19 +343,48 @@ async function getProducts(keyword, category) {
 function generatePriceHistory(currentPrice) {
   const history = [];
   const now = Date.now();
+
+  // ── 상품별 시나리오 무작위 생성 ──
+  // 단순 균등 노이즈가 아니라 "이 상품은 어떤 양상인가"를 먼저 정함
+  // → 결과적으로 상품마다 추이가 다르게 보여 차트가 다양해지고
+  //   "가격 타이밍" 점수도 상품별로 변별력이 생김
+
+  // 트렌드: -0.15 ~ +0.15
+  //   음수면 90일에 걸쳐 가격이 떨어지는 추세 (현재가 = 저점)
+  //   양수면 오르는 추세 (현재가 = 고점)
+  //   0 근처면 안정적
+  const trend = (Math.random() - 0.5) * 0.3;
+
+  // 노이즈 강도: 3~11% (상품별 변동성 차이 시뮬레이션)
+  //   생필품/장기재고품은 안정적, 시즌성 식품은 변동 큼
+  const noiseLevel = 0.03 + Math.random() * 0.08;
+
+  // 90일 전 시작 가격: 현재가에서 trend를 역산해 추정
+  // (현재 = 시작 + trend 변동이라 가정)
+  const startPrice = currentPrice * (1 - trend);
+
   for (let i = 90; i >= 0; i -= 10) {
-    // (Math.random() - 0.3): -0.3 ~ 0.7 범위 → 평균값 약 +0.2 (살짝 높은 쪽)
-    // * 0.15: 최대 ±15% 이내 변동 (실제 가격 변동폭과 유사한 수준)
-    // → 결과적으로 과거 가격이 평균적으로 현재가보다 약간 높게 생성됨
-    //   → 오늘이 "최근 90일 중 저가권"으로 보여 데모 점수가 잘 분포됨
-    const variance = (Math.random() - 0.3) * 0.15;
+    const progress = (90 - i) / 90; // 0(90일 전) ~ 1(오늘)
+
+    // 1) 트렌드 라인: 시작가 → 현재가 선형 보간
+    const trendPrice = startPrice + (currentPrice - startPrice) * progress;
+
+    // 2) 일상 노이즈: ±noiseLevel 범위 균등 분포
+    const noise = (Math.random() - 0.5) * 2 * noiseLevel;
+
+    // 3) 할인 이벤트: 15% 확률로 5~15% 추가 하락
+    //    (실제 쇼핑몰 주기적 행사 시뮬레이션 — 차트에 "뚝 떨어지는 점"을 만듦)
+    const discount = Math.random() < 0.15 ? -(0.05 + Math.random() * 0.1) : 0;
+
+    const price = Math.round(trendPrice * (1 + noise + discount));
+
     history.push({
-      // ISO 날짜의 앞부분만 떼서 "YYYY-MM-DD" 형식으로 저장 (시·분·초 불필요)
       date: new Date(now - i * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
-      price: Math.round(currentPrice * (1 + variance)),
+      price: Math.max(1, price), // 0/음수 방지 안전망
     });
   }
-  // 오늘 가격은 무조건 정확한 현재가로 마무리 (마지막 포인트가 진짜 가격)
+
+  // 마지막 포인트는 무조건 정확한 현재가 (차트 끝점이 실가격과 일치하도록)
   history.push({ date: new Date().toISOString().split("T")[0], price: currentPrice });
   return history;
 }
