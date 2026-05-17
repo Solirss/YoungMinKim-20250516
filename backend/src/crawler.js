@@ -157,6 +157,28 @@ const MOCK_DATA = {
     { id: "mock-17", name: "CJ 햇반 즉석밥 210g 24개입", price: 24900, brand: "CJ", image: "", rating: 4.7, reviews: 31092, volume: { amount: 24, unit: "개" }, pricePerUnit: 1038, isPremium: true, isBulk: true },
     { id: "mock-23", name: "농협 고시히카리 10kg", price: 36900, brand: "농협", image: "", rating: 4.6, reviews: 4231, volume: { amount: 10, unit: "kg" }, pricePerUnit: 3690, isPremium: false, isBulk: true },
   ],
+  라면: [
+    { id: "mock-24", name: "농심 신라면 멀티팩 120g 20개입", price: 17900, brand: "농심", image: "", rating: 4.9, reviews: 28341, volume: { amount: 20, unit: "개" }, pricePerUnit: 895, isPremium: true, isBulk: true },
+    { id: "mock-25", name: "오뚜기 진라면 매운맛 120g 20개입", price: 14900, brand: "오뚜기", image: "", rating: 4.7, reviews: 18234, volume: { amount: 20, unit: "개" }, pricePerUnit: 745, isPremium: false, isBulk: true },
+    { id: "mock-26", name: "삼양 불닭볶음면 140g 20개입", price: 19800, brand: "삼양", image: "", rating: 4.8, reviews: 21432, volume: { amount: 20, unit: "개" }, pricePerUnit: 990, isPremium: true, isBulk: true },
+    { id: "mock-27", name: "농심 안성탕면 125g 20개입", price: 13900, brand: "농심", image: "", rating: 4.6, reviews: 9821, volume: { amount: 20, unit: "개" }, pricePerUnit: 695, isPremium: false, isBulk: true },
+    { id: "mock-28", name: "팔도 비빔면 130g 20개입", price: 16500, brand: "팔도", image: "", rating: 4.5, reviews: 7432, volume: { amount: 20, unit: "개" }, pricePerUnit: 825, isPremium: false, isBulk: true },
+    { id: "mock-29", name: "농심 짜파게티 140g 20개입", price: 18200, brand: "농심", image: "", rating: 4.8, reviews: 15321, volume: { amount: 20, unit: "개" }, pricePerUnit: 910, isPremium: true, isBulk: true },
+  ],
+  생수: [
+    { id: "mock-30", name: "제주삼다수 2L 12병", price: 14900, brand: "제주삼다수", image: "", rating: 4.9, reviews: 42321, volume: { amount: 24, unit: "L" }, pricePerUnit: 621, isPremium: true, isBulk: true },
+    { id: "mock-31", name: "아이시스 8.0 2L 12병", price: 9900, brand: "롯데칠성", image: "", rating: 4.7, reviews: 21043, volume: { amount: 24, unit: "L" }, pricePerUnit: 413, isPremium: false, isBulk: true },
+    { id: "mock-32", name: "백산수 2L 12병", price: 11900, brand: "농심", image: "", rating: 4.8, reviews: 18432, volume: { amount: 24, unit: "L" }, pricePerUnit: 496, isPremium: false, isBulk: true },
+    { id: "mock-33", name: "평창수 2L 12병", price: 10500, brand: "해태", image: "", rating: 4.6, reviews: 8743, volume: { amount: 24, unit: "L" }, pricePerUnit: 438, isPremium: false, isBulk: true },
+    { id: "mock-34", name: "에비앙 1.5L 12병", price: 28900, brand: "에비앙", image: "", rating: 4.8, reviews: 5421, volume: { amount: 18, unit: "L" }, pricePerUnit: 1606, isPremium: true, isBulk: true },
+  ],
+  김: [
+    { id: "mock-35", name: "동원 양반 들기름김 5g 100봉", price: 24900, brand: "동원", image: "", rating: 4.8, reviews: 18234, volume: { amount: 100, unit: "봉" }, pricePerUnit: 249, isPremium: true, isBulk: true },
+    { id: "mock-36", name: "광천김 재래김 도시락김 100봉", price: 17900, brand: "광천김", image: "", rating: 4.7, reviews: 12043, volume: { amount: 100, unit: "봉" }, pricePerUnit: 179, isPremium: false, isBulk: true },
+    { id: "mock-37", name: "풀무원 곱창김 도시락김 80봉", price: 15900, brand: "풀무원", image: "", rating: 4.7, reviews: 8432, volume: { amount: 80, unit: "봉" }, pricePerUnit: 199, isPremium: false, isBulk: true },
+    { id: "mock-38", name: "명가 프리미엄 조미김 50봉", price: 18500, brand: "명가", image: "", rating: 4.9, reviews: 6543, volume: { amount: 50, unit: "봉" }, pricePerUnit: 370, isPremium: true, isBulk: true },
+    { id: "mock-39", name: "대천김 본조림김 60봉", price: 12900, brand: "대천김", image: "", rating: 4.5, reviews: 4321, volume: { amount: 60, unit: "봉" }, pricePerUnit: 215, isPremium: false, isBulk: true },
+  ],
 };
 
 /**
@@ -169,6 +191,9 @@ function resolveMockCategory(keyword, category) {
   if (key.includes("화장지") || key.includes("휴지") || key.includes("롤")) return "휴지";
   if (key.includes("기저귀")) return "기저귀";
   if (key.includes("쌀") || key.includes("즉석밥")) return "쌀";
+  if (key.includes("라면") || key.includes("멀티팩")) return "라면";
+  if (key.includes("생수") || key.includes("물") || key.includes("워터")) return "생수";
+  if (key.includes("김") || key.includes("조미김") || key.includes("도시락김")) return "김";
   if (MOCK_DATA[category]) return category;
   return "세제";
 }

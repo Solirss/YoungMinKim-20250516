@@ -15,12 +15,16 @@
 import React from "react";
 
 // 빠른 시작 버튼 목록
-// App.js의 CATEGORIES와 일부 겹치지만 온보딩에서 보여줄 대표 항목만 선별
+// App.js의 CATEGORIES와 동일하게 8개 전체 노출 (생활용품 4 + 음식 4)
 const QUICK_STARTS = [
-  { label: "세제",   emoji: "🧴", keyword: "세제" },
-  { label: "기저귀", emoji: "👶", keyword: "기저귀 대형" },
-  { label: "화장지", emoji: "🧻", keyword: "화장지 30롤" },
-  { label: "쌀",     emoji: "🌾", keyword: "쌀 10kg" },
+  { label: "세제",     emoji: "🧴", keyword: "세제" },
+  { label: "휴지",     emoji: "🧻", keyword: "화장지 30롤" },
+  { label: "기저귀",   emoji: "👶", keyword: "기저귀 대형" },
+  { label: "키친타올", emoji: "🍃", keyword: "키친타올" },
+  { label: "쌀",       emoji: "🌾", keyword: "쌀 10kg" },
+  { label: "라면",     emoji: "🍜", keyword: "라면 멀티팩" },
+  { label: "생수",     emoji: "💧", keyword: "생수 2L" },
+  { label: "김",       emoji: "🍙", keyword: "조미김" },
 ];
 
 export default function OnboardingBanner({ onCategoryClick }) {

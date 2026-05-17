@@ -29,12 +29,16 @@ const API_BASE = process.env.REACT_APP_API_URL || "";
 
 // 카테고리 탭 목록
 // keyword는 다나와 크롤링에 사용하는 실제 검색어 (label과 다를 수 있음)
+// 생활용품 4종 + 음식 4종으로 균형 (이전에는 음식이 쌀 1개뿐이라 편향)
 const CATEGORIES = [
   { label: "세제",     emoji: "🧴", keyword: "세제" },
   { label: "휴지",     emoji: "🧻", keyword: "화장지 30롤" },
   { label: "기저귀",   emoji: "👶", keyword: "기저귀 대형" },
-  { label: "쌀",       emoji: "🌾", keyword: "쌀 10kg" },
   { label: "키친타올", emoji: "🍃", keyword: "키친타올" },
+  { label: "쌀",       emoji: "🌾", keyword: "쌀 10kg" },
+  { label: "라면",     emoji: "🍜", keyword: "라면 멀티팩" },
+  { label: "생수",     emoji: "💧", keyword: "생수 2L" },
+  { label: "김",       emoji: "🍙", keyword: "조미김" },
 ];
 
 // 유저 행동 로그 초기값
