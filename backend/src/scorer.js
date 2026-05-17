@@ -111,20 +111,25 @@ async function scoreProductsWithGPT(products, userLog, personaType) {
     };
   }
 
-  // GPT에 전달할 핵심 지표만 추출 (토큰 절약)
+  // ── GPT 입력 데이터 슬림화 ──
+  // 원본 상품 객체에는 image, source, id 등 점수 산출과 무관한 필드가 많음
+  // → 평가에 필요한 핵심 지표만 추려서 토큰 사용량과 GPT 혼란을 줄임
+  // index를 함께 보내는 이유: GPT 응답이 순서를 섞을 수 있으므로 index로 매핑 복원
   const productSummaries = products.map((p, i) => ({
-    index: i,
+    index: i,                     // GPT 응답 매핑 키 — 0~9
     name: p.name,
     brand: p.brand,
     price: p.price,
-    pricePerUnit: p.pricePerUnit,
-    unit: p.volume?.unit,
-    rating: p.rating || 0,      // 다나와 .text__score 에서 수집됨
-    reviews: p.reviews || 0,    // 다나와 .text__review .text__number 에서 수집됨
-    minPrice3M: p.priceHistory ? Math.min(...p.priceHistory.map((h) => h.price)) : p.price,  // 3달 최저가
-    maxPrice3M: p.priceHistory ? Math.max(...p.priceHistory.map((h) => h.price)) : p.price,  // 3달 최고가
-    marketAvgPrice: p.marketAvgPrice,
-    marketAvgPricePerUnit: p.marketAvgPricePerUnit,
+    pricePerUnit: p.pricePerUnit, // 단가 (없으면 null → GPT가 단가 비교에서 제외 판단)
+    unit: p.volume?.unit,         // "g"|"ml"|"롤" 등 — 툴팁에서 단가 단위 표기 시 사용
+    rating: p.rating || 0,        // 다나와 .text__score 에서 수집
+    reviews: p.reviews || 0,      // 다나와 .text__review .text__number 에서 수집
+    // 3달 최저/최고가를 미리 계산해서 GPT에게 직접 제공
+    // → GPT가 priceHistory 배열을 받아 직접 min/max 계산하는 것보다 토큰 절약 + 정확
+    minPrice3M: p.priceHistory ? Math.min(...p.priceHistory.map((h) => h.price)) : p.price,
+    maxPrice3M: p.priceHistory ? Math.max(...p.priceHistory.map((h) => h.price)) : p.price,
+    marketAvgPrice: p.marketAvgPrice,             // 검색 결과 내 평균가
+    marketAvgPricePerUnit: p.marketAvgPricePerUnit, // 검색 결과 내 평균 단가
     isPremium: p.isPremium,
     isBulk: p.isBulk,
   }));
@@ -152,6 +157,12 @@ async function scoreProductsWithGPT(products, userLog, personaType) {
 4. 가성비 종합 (20%): 위 세 기준의 균형`,
   }[personaType];
 
+  // ── GPT 프롬프트 구성 ──
+  // 점수 규칙을 명시적으로 강제하는 이유:
+  //   GPT는 기본적으로 "긍정 편향"이 있어 자유롭게 점수를 매기게 두면 대부분 80~95점에 몰림
+  //   → 상품 간 변별력 확보를 위해 점수 분포 가이드와 상·하한 룰을 박아넣음
+  // tooltip을 같은 JSON에 받는 이유:
+  //   점수만 받고 별도로 툴팁 호출하면 API 요청 2배 + 일관성 깨짐
   const prompt = `당신은 한국 이커머스 가성비 분석 전문가입니다.
 
 ${personaContext}
@@ -174,27 +185,44 @@ tooltip 규칙: 25자 이내, 핵심 수치 2개 포함 (예: "최저가 대비 
 
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4o-mini",   // 가성비/속도 균형 (4o보다 ~10배 저렴하면서 이 정도 평가는 충분)
       messages: [{ role: "user", content: prompt }],
-      // temperature 0.3: 점수가 매번 크게 달라지면 신뢰성이 떨어지므로 낮게 설정
-      // max_tokens 900: 상품 10개 × {"index":i,"score":nn,"tooltip":"..."} ≈ 60토큰 여유 포함
+      // temperature 0.3:
+      //   너무 낮으면(0.0) 같은 입력에 너무 결정론적이라 다양성 부족
+      //   너무 높으면(0.7+) 같은 상품인데 새로고침마다 점수가 크게 달라져 신뢰 깨짐
+      //   0.3은 OpenAI 권장 "분류·평가 작업" 수준
       temperature: 0.3,
+      // max_tokens 900:
+      //   상품 10개 × {"index":i,"score":nn,"tooltip":"~25자"} ≈ 약 70토큰/항목
+      //   여유 마진 포함해 900으로 (응답 잘림 방지)
       max_tokens: 900,
     });
 
-    // GPT 응답에서 JSON 부분만 추출해 파싱
+    // ── GPT 응답 파싱 ──
+    // GPT가 가끔 ```json ... ``` 코드 펜스를 붙이는 경우가 있어 제거
+    // (프롬프트에 "마크다운 없이"를 명시했지만 100% 신뢰할 수 없음)
     const raw = completion.choices[0].message.content.trim().replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(raw);
 
-    // GPT가 반환한 점수를 원래 상품 배열에 매핑
+    // GPT가 반환한 점수를 원래 상품 배열의 순서대로 매핑
+    // .find()로 인덱스 매칭하는 이유: GPT가 순서를 바꿔서 반환할 수도 있어 안전
     const scoredProducts = products.map((p, i) => {
       const s = parsed.scores.find((s) => s.index === i);
+      // GPT가 일부 인덱스를 누락한 경우 → null로 처리해 프론트에서 "🔒 점수 대기중" 표시
       return { ...p, valueScore: s?.score ?? null, scoreTooltip: s?.tooltip || null };
     });
 
     return { products: scoredProducts, scoreSource: "gpt" };
 
   } catch (err) {
+    // ── 로컬 폴백 ──
+    // OpenAI API 실패 케이스:
+    //   - API 키 미설정 / 잔액 부족
+    //   - Rate limit
+    //   - JSON 파싱 실패 (GPT가 룰을 안 따른 경우)
+    //   - 네트워크 타임아웃
+    // 어느 쪽이든 화면을 비우는 것보다 로컬 점수가 낫다는 판단으로 자동 폴백
+    // scoreSource: "local"이 응답에 포함돼 프론트 콘솔에서 폴백 발생 여부 추적 가능
     console.error("GPT 점수 산출 실패, 로컬 폴백:", err.message);
     const scoredProducts = products.map((p) => ({
       ...p,
@@ -208,44 +236,68 @@ tooltip 규칙: 25자 이내, 핵심 수치 2개 포함 (예: "최저가 대비 
 /**
  * GPT 실패 시 로컬 점수 계산
  *
- * 브랜드파/mixed:
- *   가격 타이밍 점수(70%) + 리뷰/평점 신뢰도(30%) 합산
+ * 결정론적인 산식으로 0~99 점수를 산출합니다.
+ * GPT만큼 미묘한 판단은 못 하지만, 핵심 신호(가격 타이밍 또는 단가)는 정확히 반영.
  *
- * 용량파:
- *   단가 절약률 점수(70%) + 리뷰 신뢰도(30%) 합산
+ * 공통 구조:
+ *   - 핵심 점수(0~79) + 신뢰도 가산점(0~25) → cap 99
+ *   - 핵심 점수 상한을 79로 두는 이유: trustScore(최대 25)와 합쳐도 100을 안 넘게 설계
+ *
+ * 성향별 핵심 점수:
+ *   brand/mixed: 가격 타이밍 (현재가가 3달 최저가에 얼마나 가까운가)
+ *   volume:      단가 절약률 (시장 평균 단가 대비 얼마나 저렴한가)
  */
 function calcLocalScore(product, personaType) {
-  // 리뷰/평점 신뢰도 점수 (0~20점)
-  // log10 스케일 사용: 리뷰 100개→10점, 1000개→15점, 30000개→15점처럼 수확 체감 반영
-  // 30000을 기준으로 정규화: 다나와 최다 리뷰 상품(아리엘 등)이 대략 2만~3만개 수준
+  // ── 신뢰도 점수 (trustScore, 0~25점) ──
+  // 리뷰 수에 log10 스케일을 적용한 이유:
+  //   리뷰가 100개에서 1000개로 늘면 의미가 크지만, 1만에서 10만은 차이가 미미
+  //   → 선형(개수 그대로 점수)이면 메가 히트 상품에만 점수가 쏠림
+  //   → log10으로 평탄화: 100개→10점, 1000개→15점, 1만개→17점, 3만개→15점(cap)
+  // 30000을 기준으로 정규화한 이유:
+  //   다나와에서 가장 많은 리뷰 상품(아리엘, 하기스 등)이 대략 2만~3만 리뷰 수준
+  //   → 이 정도가 사실상 상한이라고 가정하고 분모로 사용
   const reviewScore = Math.min(20, Math.round((Math.log10(product.reviews + 1) / Math.log10(30000)) * 15));
+  // 평점 보너스: 4.7+ 면 강한 신뢰 신호, 4.0+는 약한 신호, 그 미만은 0
+  // 평점이 0(다나와 파싱 실패)인 경우는 4.0 미만 조건에 걸려 자동 0점 가산
   const ratingBonus = product.rating >= 4.7 ? 5 : product.rating >= 4.0 ? 2 : 0;
   const trustScore = reviewScore + ratingBonus;
 
   if (personaType === "brand" || personaType === "mixed") {
+    // ── 브랜드/복합형: 가격 타이밍 기준 ──
+    // priceHistory가 없으면 "정보 부족"으로 중립 50점 + 신뢰도만 적용
     const history = product.priceHistory || [];
     if (!history.length) return Math.min(99, 50 + trustScore);
 
     const prices = history.map((h) => h.price);
     const minPrice = Math.min(...prices);
     const maxPrice = Math.max(...prices);
-    const range = maxPrice - minPrice || 1; // 0 나눗셈 방지 (가격 변동 없으면 1로 처리)
-    // position: 0이면 현재가 = 3달 최저가(구매 최적 타이밍), 1이면 3달 최고가
+    const range = maxPrice - minPrice || 1; // 0 나눗셈 방지 (가격 변동 없으면 분모 1로)
+
+    // position: 0이면 현재가가 3달 최저가(구매 최적 타이밍), 1이면 3달 최고가(꼭지)
     const position = (product.price - minPrice) / range;
-    // (1 - position) * 79: 최저가일수록 79점에 가깝게, 최고가일수록 0점에 가깝게
-    // 79를 상한으로 두는 이유: trustScore(0~20)를 더해도 합계 99를 넘지 않도록
+    // (1 - position) * 79:
+    //   현재가 = 최저가일 때 → position 0 → 79점 (최고 타이밍)
+    //   현재가 = 최고가일 때 → position 1 → 0점 (사면 안 됨)
+    // 79를 상한으로 두는 이유: trustScore와 합쳐도 99를 안 넘게 설계 보존
     const timingScore = Math.round((1 - position) * 79);
     return Math.min(99, Math.max(0, timingScore + trustScore));
 
   } else {
-    // 용량파
+    // ── 용량파: 단가 절약률 기준 ──
+    // pricePerUnit 또는 시장 평균 단가가 없으면 비교 불가 → 중립 50점 폴백
     if (!product.pricePerUnit || !product.marketAvgPricePerUnit) {
       return Math.min(99, 50 + trustScore);
     }
-    // ratio: 시장 평균 단가 / 이 상품 단가 → 1이면 평균, 2이면 절반 가격
-    // ratio * 55: 평균(ratio=1)이면 55점, 절반 가격(ratio=2)이면 110 → cap 79
-    // 79를 상한으로 두는 이유: trustScore(0~20)를 더해도 합계 99를 넘지 않도록
+    // ratio: 시장 평균 단가 ÷ 이 상품 단가
+    //   ratio = 1: 평균과 동일
+    //   ratio = 2: 평균의 절반 가격 (매우 저렴)
+    //   ratio < 1: 평균보다 비쌈
     const ratio = product.marketAvgPricePerUnit / product.pricePerUnit;
+    // ratio * 55:
+    //   평균(ratio=1) → 55점
+    //   절반 가격(ratio=2) → 110점 → cap 79로 잘림
+    //   평균보다 비싸면(ratio=0.7) → 38점 (감점 효과)
+    // 79를 상한으로 두는 이유: trustScore와 합쳐도 99를 안 넘게
     const valueScore = Math.round(Math.min(ratio * 55, 79));
     return Math.min(99, Math.max(0, valueScore + trustScore));
   }

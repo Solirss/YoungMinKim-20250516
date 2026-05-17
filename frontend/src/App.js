@@ -1,18 +1,31 @@
 /**
  * App.js — 올웨이즈 메인 컴포넌트
  *
- * 이 파일이 하는 일:
- * 1. 유저의 상품 클릭 행동을 신호로 수집해 성향(브랜드파/용량파/복합형)을 실시간 판별
- * 2. 다나와 크롤링 결과를 백엔드에 요청하고 GPT 가성비 점수를 받아 화면에 표시
- * 3. 장바구니 상태 관리
+ * 이 파일의 책임:
+ * 1. 유저의 상품 클릭/장바구니 담기 행동을 신호로 수집 → 성향(브랜드파/용량파/복합형) 실시간 판별
+ * 2. 다나와 크롤링 결과를 백엔드에 요청하고 GPT 가성비 점수를 받아 ProductList에 전달
+ * 3. 장바구니 상태와 드로어 UI 토글 관리
  *
  * 핵심 상태:
- * - userLog: 유저 행동 로그 (클릭할 때마다 누적, 세션 동안 유지)
- * - products: 현재 표시 중인 상품 목록 (백엔드에서 받아온 데이터)
- * - cart: 장바구니 아이템 목록
+ * - userLog:   유저 행동 로그 (클릭할 때마다 누적, 새로고침 시 초기화 — 세션 단위)
+ * - products:  현재 표시 중인 상품 목록 (백엔드 응답)
+ * - cart:      장바구니 아이템 배열 ([{ ...product, qty }])
  *
- * 성향 판별 흐름:
- * 상품 클릭 → updateLog() → userLog 업데이트 → calcPersona() 재계산 → PersonaBadge 실시간 반영
+ * 성향 판별 흐름 (핵심 데이터 플로우):
+ *   상품 클릭/담기
+ *      ↓
+ *   updateLog(product)         — 6가지 신호(brand, premium, avgAbove, highRating, bulk, lowUnit) 누적
+ *      ↓ (loggedSignals Set으로 같은 상품·같은 신호 중복 방지)
+ *   userLog 업데이트
+ *      ↓ (리렌더링)
+ *   calcPersona(userLog)       — 가중치 합산 → "brand"|"volume"|"mixed"|"unknown" 결정
+ *      ↓
+ *   PersonaBadge / ProductList — 결과를 헤더 칩과 상품 점수 컨텍스트에 반영
+ *
+ * 백엔드와의 동기화:
+ *   calcPersona()는 백엔드 scorer.js의 detectPersonaType()과 100% 동일한 로직.
+ *   프론트가 직접 계산하는 이유: 클릭 즉시 PersonaBadge가 반응해야 UX가 자연스러워서.
+ *   백엔드는 GPT 프롬프트의 성향 컨텍스트를 위해 자체적으로 다시 계산 (네트워크 단절 시에도 일관성).
  */
 
 import React, { useState, useCallback, useRef } from "react";
@@ -42,36 +55,56 @@ const CATEGORIES = [
 ];
 
 // 유저 행동 로그 초기값
-// 세션 시작 시 빈 상태에서 시작하고, 상품을 클릭할 때마다 해당 필드가 누적됨
+//
+// 각 필드의 의미와 신호 유형:
+//   - clickedBrands / brandClickCounts: 브랜드 충성도 측정 (반복 브랜드 클릭 = 강한 브랜드파 신호)
+//   - premiumClicks / avgAboveClicks / highRatingClicks: 브랜드파 신호 (고가/고평점 선호)
+//   - bulkClicks / lowUnitPriceClicks: 용량파 신호 (대용량/저단가 선호)
+//   - totalClicks: Cold Start 임계값 판별용 (3회 미만이면 "unknown" 반환)
+//
+// 새로고침 시 초기화되는 점에 유의: 실 서비스에서는 로그인 + DB 저장으로 영속화 필요.
 const INITIAL_LOG = {
-  clickedBrands: [],      // 클릭한 고유 브랜드 목록 (중복 없이)
-  brandClickCounts: {},   // { 브랜드명: 클릭횟수 } — 같은 브랜드 반복 클릭 추적
-  premiumClicks: 0,       // 시장 평균가 130% 이상 상품을 클릭한 횟수
-  avgAboveClicks: 0,      // 시장 평균가 이상 상품 클릭 횟수 (brand 필드 없을 때 보완 신호)
-  highRatingClicks: 0,    // 평점 4.7 이상 상품 클릭 횟수 (브랜드 신뢰도 직접 신호)
-  bulkClicks: 0,          // 대용량 상품(isBulk) 클릭 횟수
-  lowUnitPriceClicks: 0,  // 시장 평균 단가의 80% 이하 상품 클릭 횟수
-  totalClicks: 0,         // 전체 클릭 수 (디버깅용)
+  clickedBrands: [],      // 클릭한 고유 브랜드 목록 (Set처럼 중복 없이 누적) — GPT 프롬프트에 "선호 브랜드"로 전달
+  brandClickCounts: {},   // { 브랜드명: 클릭횟수 } — 같은 브랜드 2회 이상 클릭 시 강한 신호로 카운트
+  premiumClicks: 0,       // 시장 평균가 130% 이상 상품을 클릭한 횟수 (브랜드파 강신호 +2)
+  avgAboveClicks: 0,      // 시장 평균가 이상 상품 클릭 횟수 — 다나와 상품에 brand 필드가 비어있을 때의 보완 신호 (+1)
+  highRatingClicks: 0,    // 평점 4.7 이상 상품 클릭 횟수 (브랜드 신뢰도 직접 신호 +2)
+  bulkClicks: 0,          // 대용량(isBulk=true) 상품 클릭 횟수 — 다나와 결과에 대용량이 흔해 가중치 1로 평탄화
+  lowUnitPriceClicks: 0,  // 시장 평균 단가의 80% 이하 상품 클릭 횟수 (용량파 강신호 +2)
+  totalClicks: 0,         // 전체 클릭 수 — Cold Start 게이트(3회) 판별 및 디버깅에 사용
 };
 
 /**
  * 유저 행동 로그를 기반으로 성향을 판별합니다.
- * 백엔드 detectPersonaType()과 동일한 로직을 프론트에서도 유지해
- * 헤더의 PersonaBadge가 클릭 즉시 업데이트되도록 합니다.
  *
- * 브랜드파 신호 (고가/브랜드 선호 행동):
- *   +2  같은 브랜드 2번 이상 클릭 (강한 브랜드 충성도 신호)
- *   +2  시장 평균가 130% 이상 상품 클릭 (프리미엄 선호)
- *   +2  고평점 상품 클릭 (평점 4.7 이상 — 브랜드 신뢰도 직접 신호)
- *   +1  시장 평균가 이상 상품 클릭 (보조 신호)
+ * 백엔드 scorer.js의 detectPersonaType()과 100% 동일한 산식.
+ * 프론트가 별도 계산하는 이유: PersonaBadge가 클릭 즉시 업데이트되도록 (네트워크 라운드트립 X).
  *
- * 용량파 신호 (가격/단가 선호 행동):
- *   +1  대용량 상품 클릭 (가중치를 낮게 설정한 이유: 다나와 상품 대부분이 대용량이라
- *       가중치 2로 두면 모든 유저가 용량파로 분류되는 문제 발생)
- *   +2  시장 평균 단가의 80% 이하 상품 클릭 (명확한 저단가 선호 신호)
+ * ── 가중치 표 ──
+ * 브랜드파 신호 (고가·브랜드·평점 선호):
+ *   +2  같은 브랜드 2번 이상 클릭        — 가장 강한 브랜드 충성도 신호
+ *   +2  시장 평균가 130% 이상 상품 클릭  — 프리미엄 가격대 선호
+ *   +2  평점 4.7 이상 상품 클릭          — 브랜드 신뢰도 직접 신호
+ *   +1  시장 평균가 이상 상품 클릭       — brand 필드가 비어있을 때의 보완 신호
  *
- * Cold Start: 클릭한 상품 수가 3개 미만이면 "unknown" 반환 → 점수 배지 미노출
- * (가중치 합이 아닌 실제 클릭 수 기준 — 한 번 클릭만으로 활성화되는 문제 방지)
+ * 용량파 신호 (저단가·대용량 선호):
+ *   +1  대용량(isBulk) 상품 클릭
+ *       └─ 가중치를 1로 낮춘 이유: 다나와 결과의 70%+가 대용량으로 분류되어
+ *          +2를 주면 거의 모든 유저가 용량파로 판별되는 문제가 있었음
+ *   +2  시장 평균 단가의 80% 이하 상품 클릭 — 명확한 저단가 선호 신호
+ *
+ * 판정 로직:
+ *   total = brandScore + volumeScore
+ *   ratio = brandScore / total
+ *   ratio >= 0.6 → "brand"  (브랜드 신호가 60% 이상)
+ *   ratio <= 0.4 → "volume" (브랜드 신호가 40% 이하)
+ *   그 사이      → "mixed"
+ *
+ * Cold Start:
+ *   클릭 수 3회 미만이면 무조건 "unknown" 반환.
+ *   가중치 합이 아닌 "실제 클릭 횟수" 기준인 이유:
+ *     한 상품이 premium + bulk + highRating을 동시에 만족하면 1클릭에 6점이 쌓여
+ *     성향이 즉시 활성화되는 문제가 있었음 → 최소 3개 다른 상품 클릭을 요구로 변경.
  */
 function calcPersona(log) {
   const {
@@ -139,13 +172,18 @@ export default function App() {
 
   /**
    * 중복 신호 방지용 Set
-   * key 형식: "productId:signalType" (예: "danawa-0-123:bulk")
    *
-   * useRef를 쓰는 이유: 리렌더링을 트리거하지 않고 값을 유지해야 하기 때문
-   * useState로 하면 Set 업데이트마다 리렌더링 발생 → 성능 저하
+   * key 형식: "productId:signalType" (예: "danawa-0-1747000000000:bulk")
    *
-   * 이전 버그: productId 전체를 key로 쓰면 같은 상품의 다른 신호가 모두 차단됨
-   * 수정: signalType을 포함한 "productId:signalType" 조합으로 신호별 독립 체크
+   * 왜 useRef인가:
+   *   useState로 Set을 관리하면 추가/삭제마다 리렌더링이 발생 → 클릭 한 번에 6개 신호 추가 시
+   *   불필요한 리렌더 6번 발생. ref는 값을 보존하면서 리렌더 트리거 X.
+   *
+   * 왜 "productId:signalType" 조합 키인가:
+   *   초기 버전은 productId만 키로 썼는데, 한 번 클릭한 상품에 대해 다른 신호(rating, bulk 등)도
+   *   모두 차단되는 버그가 있었음. signalType을 함께 묶어 신호별로 독립 dedup.
+   *
+   * 다른 상품을 클릭하면 새로운 productId라 신호가 다시 카운트됨 → 의도된 동작.
    */
   const loggedSignals = useRef(new Set());
 
@@ -157,14 +195,20 @@ export default function App() {
   /**
    * 상품 클릭 시 행동 신호를 userLog에 누적합니다.
    *
-   * 각 신호는 "productId:signalType" 키로 중복을 방지합니다.
-   * 같은 상품을 여러 번 클릭해도 신호는 1회만 카운트됩니다.
+   * 동작 원리:
+   *   - 한 번의 클릭으로 상품의 여러 신호(예: premium + highRating + bulk)가 동시에 카운트될 수 있음
+   *   - 각 신호는 "productId:signalType" 키로 dedup → 같은 상품을 여러 번 눌러도 신호당 1회만 누적
+   *   - totalClicks만 매번 +1 → Cold Start 게이트(3회) 카운팅의 근거
    *
-   * changed 플래그를 사용해 실제로 변경된 경우에만 상태를 업데이트합니다.
-   * (불필요한 리렌더링 방지)
+   * changed 플래그를 두는 이유:
+   *   - 이미 로그된 상품을 다시 누르면 신호는 늘지 않지만 setUserLog는 새 객체를 반환
+   *   - 그러면 참조가 바뀌어 자식 컴포넌트들이 불필요하게 재렌더
+   *   - changed=false면 prev를 그대로 반환해 React가 동일 참조로 감지하고 리렌더 스킵
    *
-   * useCallback 의존성 배열이 빈 이유:
-   * loggedSignals는 ref라 의존성 불필요, setUserLog는 setState라 안정적
+   * useCallback 의존성 빈 배열:
+   *   - loggedSignals는 ref (값 변경 추적 불필요)
+   *   - setUserLog는 setState (React가 stable 보장)
+   *   → 의존성 없음, 컴포넌트 수명 동안 한 번만 생성
    */
   const updateLog = useCallback((product) => {
     setUserLog((prev) => {
@@ -260,8 +304,18 @@ export default function App() {
 
   /**
    * 다나와 크롤링 + GPT 점수 요청
-   * userLog를 함께 전송해 서버에서도 성향 기반 점수를 계산합니다.
-   * useCallback: userLog가 바뀔 때만 함수 재생성 (의존성 최적화)
+   *
+   * 백엔드에 userLog를 함께 보내는 이유:
+   *   백엔드도 자체적으로 detectPersonaType()을 돌려 GPT 프롬프트의 성향 컨텍스트를 만듦.
+   *   (프론트 calcPersona와 결과는 동일하지만, 백엔드가 GPT 호출 시 외부 의존성 없이 동작 가능)
+   *
+   * useCallback 의존성에 userLog가 들어가는 이유:
+   *   매 호출 시 최신 userLog를 캡처해야 하므로 userLog가 바뀔 때마다 새 함수 생성 필요.
+   *   (의존성을 빼면 클로저가 초기 빈 userLog를 영원히 캡처해서 백엔드에 매번 빈 로그가 감)
+   *
+   * 에러 메시지가 일반적인 이유:
+   *   네트워크 실패/서버 5xx/4xx 모두 같은 메시지 — 사용자는 차이를 알 수 없고
+   *   상세 노출은 보안상 부담. 디버깅 정보는 console.log로 남겨 개발자만 확인.
    */
   const fetchProducts = useCallback(async (keyword, category) => {
     setLoading(true);
@@ -277,10 +331,10 @@ export default function App() {
       const data = await res.json();
       setProducts(data.products);
 
-      // 디버깅: 브라우저 콘솔에서 점수 출처 확인
-      // scoreSource: "gpt" → GPT API 정상 응답
-      // scoreSource: "local" → GPT 실패, 로컬 알고리즘 폴백
-      // scoreSource: "none" → Cold Start, 점수 없음
+      // 디버깅용 로그: 점수가 GPT에서 왔는지 로컬 폴백인지 콘솔에서 확인 가능
+      //   "gpt"   → GPT API 정상 응답 (성공 케이스)
+      //   "local" → GPT 실패, 로컬 알고리즘 폴백 (사용자엔 보이지 않음)
+      //   "none"  → Cold Start, 아직 점수 산출 안 함
       console.log(`[점수 출처] personaType: ${data.personaType}, scoreSource: ${data.scoreSource}`);
     } catch (e) {
       setError("상품을 불러오지 못했어요. 잠시 후 다시 시도해주세요.");

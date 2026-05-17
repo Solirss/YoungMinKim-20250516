@@ -3,10 +3,14 @@
  *
  * 이 파일이 하는 일:
  * 1. 상품 카드 그리드 렌더링
- * 2. 가성비 점수 배지(ScoreBadge) 표시 — hover/tap 시 툴팁으로 점수 근거 표시
- * 3. 90일 가격 추이 미니 차트(PriceChart) 렌더링
+ * 2. 가성비 점수 배지(ScoreBadge) — hover/tap 시 툴팁으로 점수 근거 표시
+ * 3. 90일 가격 추이 미니 차트(PriceChart) — SVG로 직접 그려서 라이브러리 의존성 X
  * 4. 성향 배너 — 현재 어떤 기준으로 점수를 계산했는지 유저에게 설명
- * 5. Cold Start 상태 안내 — 점수 대기중 🔒 표시
+ * 5. Cold Start 상태 안내 — 점수가 활성화되기 전 "🔒 점수 대기중" 표시
+ *
+ * 부모로부터 받는 데이터:
+ *   products: 백엔드 응답 그대로 (valueScore, scoreTooltip, priceHistory 등 모두 포함)
+ *   onProductClick / onAddToCart: 행동 로그를 누적하기 위한 콜백
  */
 
 import React, { useState } from "react";
@@ -57,12 +61,18 @@ function ScoreBadge({ score, tooltip, personaType }) {
   return (
     <div
       className="badge-wrapper"
-      // 데스크탑: hover로 툴팁 제어
+      // ── 데스크탑 ──
+      // hover 진입/이탈로 툴팁 자동 표시·숨김. CSS :hover 대신 state로 관리하는 이유:
+      // 모바일 탭 동작과 같은 state를 공유해야 동일한 툴팁 컴포넌트로 처리 가능.
       onMouseEnter={() => setShowTip(true)}
       onMouseLeave={() => setShowTip(false)}
-      // 모바일: 탭으로 툴팁 토글, 3초 후 자동 숨김
+      // ── 모바일 ──
+      // 탭하면 토글 + 3초 후 자동 숨김. setTimeout으로 닫는 이유:
+      // 모바일은 onMouseLeave가 없어서 한 번 띄우면 안 사라짐 → 시간 기반 자동 닫기.
       onClick={(e) => {
-        e.stopPropagation(); // 상품 카드 클릭 이벤트가 함께 발생하는 것 방지
+        // 상품 카드 onClick(=updateLog 호출)이 함께 트리거되는 것을 막음
+        // → 배지 탭만으로는 행동 로그가 쌓이지 않게 (실제 상품 선택 의도 X)
+        e.stopPropagation();
         setShowTip((v) => !v);
         setTimeout(() => setShowTip(false), 3000);
       }}
@@ -72,7 +82,7 @@ function ScoreBadge({ score, tooltip, personaType }) {
         <span className="badge-icon">{tier}</span>
       </div>
 
-      {/* tooltip이 있을 때만 표시 */}
+      {/* tooltip이 있을 때만 표시 — Cold Start 직후 GPT 응답 누락 케이스 방어 */}
       {showTip && tooltip && (
         <div className="tooltip">
           <span className="tooltip-label">{tipIcon}</span>
@@ -86,30 +96,35 @@ function ScoreBadge({ score, tooltip, personaType }) {
 /**
  * PriceChart — 90일 가격 추이 미니 SVG 차트
  *
- * priceHistory 배열을 받아 꺾은선 그래프를 그립니다.
- * 최저가/최고가를 기준으로 y축을 정규화합니다.
+ * priceHistory 배열을 받아 꺾은선 그래프를 SVG로 직접 그립니다.
+ * Recharts/Chart.js 같은 라이브러리 대신 직접 SVG로 그리는 이유:
+ *   - 미니 차트 하나에 라이브러리 50~200KB는 과한 비용
+ *   - 직선 polyline 하나면 끝나는 단순 시각화
+ *   - 결과: 카드 1개당 약 30줄 SVG 코드로 충분
  *
- * 현재는 시뮬레이션 데이터를 사용하지만,
- * 실 서비스에서는 DB에 쌓인 실제 가격 이력으로 대체되어야 합니다.
+ * 데이터 출처: 백엔드 generatePriceHistory()의 시뮬레이션 데이터.
+ *   실 서비스에선 DB에 쌓인 실제 가격 이력으로 교체 필요 (README "아쉬운 점"에 명시).
  *
  * Props:
- * - history: [{ date: string, price: number }] 배열
+ *   history: [{ date: string, price: number }] — 시간 순으로 정렬되어 있다고 가정
  */
 function PriceChart({ history }) {
-  // 데이터가 2개 미만이면 차트를 그릴 수 없음
+  // 점이 2개 미만이면 선을 그릴 수 없음 → 그냥 안 그림 (null 반환)
   if (!history || history.length < 2) return null;
 
   const prices = history.map((h) => h.price);
   const min = Math.min(...prices);
   const max = Math.max(...prices);
-  const range = max - min || 1; // 0 나눗셈 방지
+  // range가 0이 되는 경우(가격 변동 전혀 없음) → 1로 처리해 0 나눗셈 방지
+  // 이 경우 모든 점이 동일 y좌표 → 수평선이 그려짐 (의도된 동작)
+  const range = max - min || 1;
 
   const w = 80; // SVG 가로 크기 (px)
   const h = 28; // SVG 세로 크기 (px)
 
   // 각 데이터 포인트를 SVG 좌표로 변환
-  // x: 인덱스를 0~w 범위로 선형 매핑
-  // y: 가격을 h~0 범위로 반전 매핑 (SVG는 위가 0이라 반전 필요)
+  //   x: 인덱스를 0~w 범위로 선형 매핑 (0번째 = 좌측 끝, 마지막 = 우측 끝)
+  //   y: 가격을 0~h 범위로 매핑 후 반전 (SVG는 y=0이 상단이라 h에서 빼야 가격↑ = 위로↑)
   const points = history.map((item, i) => {
     const x = (i / (history.length - 1)) * w;
     const y = h - ((item.price - min) / range) * h;
@@ -126,10 +141,10 @@ function PriceChart({ history }) {
       <polyline
         points={points.join(" ")}
         fill="none"
-        stroke="currentColor"
+        stroke="currentColor"   // 부모 색상 상속 → 다크/라이트 테마 대응
         strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
+        strokeLinecap="round"   // 선 끝을 둥글게 처리 (미니 차트 미관)
+        strokeLinejoin="round"  // 꺾이는 부분도 둥글게 (각진 모서리 제거)
       />
     </svg>
   );

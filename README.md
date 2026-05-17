@@ -12,8 +12,8 @@
 
 | 서비스 | URL |
 |---|---|
-| 프론트엔드 (Vercel) | `-` |
-| 백엔드 API (Render) | `-` |
+| 프론트엔드 (Vercel) | `https://young-min-kim-20250516.vercel.app` |
+| 백엔드 API (Render) | `https://youngminkim-20250516.onrender.com` |
 ---
 
 ## 목차
