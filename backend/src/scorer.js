@@ -6,12 +6,13 @@
  * ── 고도화된 성향 판별 알고리즘 ──
  *
  *
- * 5가지 행동 신호를 가중치로 합산
+ * 행동 신호를 가중치로 합산
  *
  * [브랜드파 신호]
  *   +2  동일 브랜드 반복 클릭 (같은 브랜드 상품 2회 이상)
  *   +2  프리미엄 상품 클릭 (시장 평균가 130% 이상 상품)
- *   +2  시장 평균가 이상 상품 클릭 (다나와는 평점/리뷰 수집 불가라 보완 가중치 강화)
+ *   +2  고평점 상품 클릭 (평점 4.7 이상 — 브랜드 신뢰도 직접 신호)
+ *   +1  시장 평균가 이상 상품 클릭 (보조 신호)
  *
  * [용량파 신호]
  *   +1  대용량 상품 클릭 (다나와 상품 대부분이 대용량이라 가중치 낮춤)
@@ -38,7 +39,8 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
  *   @param {string[]} clickedBrands       - 클릭한 브랜드 목록
  *   @param {Object}   brandClickCounts    - { [brand]: clickCount } 브랜드별 클릭 횟수
  *   @param {number}   premiumClicks       - 프리미엄 상품(시장 평균 130% 이상) 클릭 수
- *   @param {number}   highRatingClicks    - 고평점(4.7+) 상품 클릭 수 *현제는 다나와 크롤링에서 평점 수집이 어려워서 0으로 고정되어 있지만, 추후 평점 수집이 가능해지면 활용 예정
+ *   @param {number}   highRatingClicks    - 고평점(4.7+) 상품 클릭 수 (다나와 HTML에서 평점 수집 확인됨)
+ *   @param {number}   avgAboveClicks      - 시장 평균가 이상 상품 클릭 수 (보조 신호)
  *   @param {number}   bulkClicks          - 대용량 상품 클릭 수
  *   @param {number}   lowUnitPriceClicks  - 저단가(평균 80% 이하) 상품 클릭 수
  * @returns {"brand"|"volume"|"mixed"|"unknown"}
@@ -48,6 +50,7 @@ function detectPersonaType(userLog) {
     clickedBrands = [],
     brandClickCounts = {},
     premiumClicks = 0,
+    highRatingClicks = 0,
     avgAboveClicks = 0,
     bulkClicks = 0,
     lowUnitPriceClicks = 0,
@@ -64,7 +67,8 @@ function detectPersonaType(userLog) {
   const brandScore =
     repeatBrandClicks * 2 +  // 브랜드 반복 클릭 (강한 신호)
     premiumClicks * 2 +      // 프리미엄 상품 클릭 (강한 신호)
-    avgAboveClicks * 2;      // 평균가 이상 클릭 — 다나와는 평점/리뷰 수집 불가라 가중치 강화
+    highRatingClicks * 2 +   // 고평점 상품 클릭 (강한 신호 — 평점 수집 복원)
+    avgAboveClicks * 1;      // 평균가 이상 클릭 (보조 신호)
 
   // ── 용량파 점수 계산 ──
   // bulkClicks는 다나와 상품 대부분이 대용량이라 가중치 1로 평탄화 (자동 쏠림 방지)
@@ -115,7 +119,8 @@ async function scoreProductsWithGPT(products, userLog, personaType) {
     price: p.price,
     pricePerUnit: p.pricePerUnit,
     unit: p.volume?.unit,
-    // rating/reviews 제외: 다나와 크롤링에서 수집 불가
+    rating: p.rating || 0,      // 다나와 .text__score 에서 수집됨
+    reviews: p.reviews || 0,    // 다나와 .text__review .text__number 에서 수집됨
     minPrice3M: p.priceHistory ? Math.min(...p.priceHistory.map((h) => h.price)) : p.price,  // 3달 최저가
     maxPrice3M: p.priceHistory ? Math.max(...p.priceHistory.map((h) => h.price)) : p.price,  // 3달 최고가
     marketAvgPrice: p.marketAvgPrice,
@@ -129,19 +134,21 @@ async function scoreProductsWithGPT(products, userLog, personaType) {
     brand: `유저는 브랜드 가치파입니다.
 평가 기준 (중요도 순):
 1. 가격 타이밍: 현재가가 3달 최저가에 가까울수록 높은 점수 (핵심)
-2. 프리미엄 여부: isPremium=true이거나 시장 평균가 이상 상품은 타이밍이 좋으면 더 높은 점수 가능
+2. 브랜드 신뢰도: rating(4.7+) 및 reviews(1000+)이 높을수록 가점
+3. 프리미엄 여부: isPremium=true이거나 시장 평균가 이상 상품은 타이밍이 좋으면 더 높은 점수 가능
 선호 브랜드: ${userLog.clickedBrands?.join(", ") || "미확인"}`,
 
     volume: `유저는 실속 용량파입니다.
 평가 기준 (중요도 순):
 1. 단위당 단가: 시장 평균(marketAvgPricePerUnit) 대비 저렴할수록 높은 점수 (핵심)
-2. 대용량 여부: isBulk=true이면 가점 (대용량 선호)`,
+2. 대용량 여부: isBulk=true이면 가점 (대용량 선호)
+3. 리뷰 신뢰도: reviews 수가 많을수록 가점 (저단가에도 실패 확률이 낮은 상품 선호)`,
 
     mixed: `유저는 브랜드와 가격을 모두 고려하는 복합형입니다.
 평가 기준:
 1. 가격 타이밍 (30%): 현재가 vs 3달 최저가
 2. 단위당 단가 (30%): 시장 평균 대비 저렴함
-3. 브랜드 신뢰도 (20%): isPremium 여부 + 시장 평균가 대비 위치
+3. 브랜드 신뢰도 (20%): rating, reviews, isPremium 종합
 4. 가성비 종합 (20%): 위 세 기준의 균형`,
   }[personaType];
 

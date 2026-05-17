@@ -60,13 +60,16 @@ async function crawlDanawa(keyword) {
       const brand = $(el).find(".prod_name .prod_eng_name").text().trim()
         || $(el).find(".maker_nm").text().trim() || "";
 
-      // 평점
-      const ratingText = $(el).find(".star_rating").attr("data-rating")
+      // 평점 — 다나와 현재 구조: <span class="text__score">4.65</span>
+      // (예전 구조 .star_rating[data-rating]는 더 이상 안 쓰이지만 안전망으로 남김)
+      const ratingText = $(el).find(".text__score").first().text().trim()
+        || $(el).find(".star_rating").attr("data-rating")
         || $(el).find(".rating_num").text().trim();
       const rating = parseFloat(ratingText) || 0;
 
-      // 리뷰 수
-      const reviewText = $(el).find(".cnt_opinion").text().replace(/[^0-9]/g, "")
+      // 리뷰 수 — 다나와 현재 구조: <div class="text__review">...<span class="text__number">100</span>
+      const reviewText = $(el).find(".text__review .text__number").first().text().replace(/[^0-9]/g, "")
+        || $(el).find(".cnt_opinion").text().replace(/[^0-9]/g, "")
         || $(el).find(".review_cnt").text().replace(/[^0-9]/g, "");
       const reviews = parseInt(reviewText) || 0;
 

@@ -43,7 +43,8 @@ const INITIAL_LOG = {
   clickedBrands: [],      // 클릭한 고유 브랜드 목록 (중복 없이)
   brandClickCounts: {},   // { 브랜드명: 클릭횟수 } — 같은 브랜드 반복 클릭 추적
   premiumClicks: 0,       // 시장 평균가 130% 이상 상품을 클릭한 횟수
-  avgAboveClicks: 0,      // 시장 평균가 이상 상품 클릭 횟수 (brand 없을 때 고가 선호 보완 신호)
+  avgAboveClicks: 0,      // 시장 평균가 이상 상품 클릭 횟수 (brand 필드 없을 때 보완 신호)
+  highRatingClicks: 0,    // 평점 4.7 이상 상품 클릭 횟수 (브랜드 신뢰도 직접 신호)
   bulkClicks: 0,          // 대용량 상품(isBulk) 클릭 횟수
   lowUnitPriceClicks: 0,  // 시장 평균 단가의 80% 이하 상품 클릭 횟수
   totalClicks: 0,         // 전체 클릭 수 (디버깅용)
@@ -57,7 +58,8 @@ const INITIAL_LOG = {
  * 브랜드파 신호 (고가/브랜드 선호 행동):
  *   +2  같은 브랜드 2번 이상 클릭 (강한 브랜드 충성도 신호)
  *   +2  시장 평균가 130% 이상 상품 클릭 (프리미엄 선호)
- *   +2  시장 평균가 이상 상품 클릭 (다나와는 평점/리뷰 수집 불가라 브랜드 신호 보완 가중치 강화)
+ *   +2  고평점 상품 클릭 (평점 4.7 이상 — 브랜드 신뢰도 직접 신호)
+ *   +1  시장 평균가 이상 상품 클릭 (보조 신호)
  *
  * 용량파 신호 (가격/단가 선호 행동):
  *   +1  대용량 상품 클릭 (가중치를 낮게 설정한 이유: 다나와 상품 대부분이 대용량이라
@@ -72,6 +74,7 @@ function calcPersona(log) {
     brandClickCounts = {},
     premiumClicks = 0,
     avgAboveClicks = 0,
+    highRatingClicks = 0,
     bulkClicks = 0,
     lowUnitPriceClicks = 0,
     totalClicks = 0,
@@ -87,7 +90,8 @@ function calcPersona(log) {
   const brandScore =
     repeatBrandClicks * 2 +
     premiumClicks * 2 +
-    avgAboveClicks * 2;  // 다나와는 brand/rating 수집 불가라 가중치 강화
+    highRatingClicks * 2 +  // 평점 신호 부활: 다나와 HTML에 평점이 있음을 재확인
+    avgAboveClicks * 1;
 
   const volumeScore =
     bulkClicks * 1 +
@@ -199,6 +203,18 @@ export default function App() {
         if (!loggedSignals.current.has(key)) {
           loggedSignals.current.add(key);
           next.avgAboveClicks = (prev.avgAboveClicks || 0) + 1;
+          changed = true;
+        }
+      }
+
+      // ── 고평점 신호 ──
+      // 평점 4.7 이상 상품 클릭 → 브랜드 신뢰도 직접 신호
+      // 다나와 HTML에서 평점이 정상 수집됨이 재확인되어 신호 복원
+      if (product.rating && product.rating >= 4.7) {
+        const key = `${product.id}:highRating`;
+        if (!loggedSignals.current.has(key)) {
+          loggedSignals.current.add(key);
+          next.highRatingClicks = (prev.highRatingClicks || 0) + 1;
           changed = true;
         }
       }
