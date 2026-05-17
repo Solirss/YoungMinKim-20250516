@@ -57,14 +57,15 @@ const INITIAL_LOG = {
  * 브랜드파 신호 (고가/브랜드 선호 행동):
  *   +2  같은 브랜드 2번 이상 클릭 (강한 브랜드 충성도 신호)
  *   +2  시장 평균가 130% 이상 상품 클릭 (프리미엄 선호)
- *   +1  시장 평균가 이상 상품 클릭 (다나와 상품에 brand 필드가 없는 경우 보완)
+ *   +2  시장 평균가 이상 상품 클릭 (다나와는 평점/리뷰 수집 불가라 브랜드 신호 보완 가중치 강화)
  *
  * 용량파 신호 (가격/단가 선호 행동):
  *   +1  대용량 상품 클릭 (가중치를 낮게 설정한 이유: 다나와 상품 대부분이 대용량이라
  *       가중치 2로 두면 모든 유저가 용량파로 분류되는 문제 발생)
  *   +2  시장 평균 단가의 80% 이하 상품 클릭 (명확한 저단가 선호 신호)
  *
- * Cold Start: 총합 3 미만이면 "unknown" 반환 → 점수 배지 미노출
+ * Cold Start: 클릭한 상품 수가 3개 미만이면 "unknown" 반환 → 점수 배지 미노출
+ * (가중치 합이 아닌 실제 클릭 수 기준 — 한 번 클릭만으로 활성화되는 문제 방지)
  */
 function calcPersona(log) {
   const {
@@ -73,7 +74,12 @@ function calcPersona(log) {
     avgAboveClicks = 0,
     bulkClicks = 0,
     lowUnitPriceClicks = 0,
+    totalClicks = 0,
   } = log;
+
+  // Cold Start: 클릭 횟수 3회 미만이면 무조건 미판별
+  // (가중치만 보면 1클릭에 프리미엄+벌크가 겹쳐 즉시 활성화되는 문제 방지)
+  if (totalClicks < 3) return "unknown";
 
   // 같은 브랜드를 2번 이상 클릭한 브랜드의 수
   const repeatBrandClicks = Object.values(brandClickCounts).filter((c) => c >= 2).length;
@@ -81,16 +87,14 @@ function calcPersona(log) {
   const brandScore =
     repeatBrandClicks * 2 +
     premiumClicks * 2 +
-    avgAboveClicks * 1;
+    avgAboveClicks * 2;  // 다나와는 brand/rating 수집 불가라 가중치 강화
 
   const volumeScore =
     bulkClicks * 1 +
     lowUnitPriceClicks * 2;
 
   const total = brandScore + volumeScore;
-
-  // Cold Start: 신호가 충분히 쌓이지 않으면 성향 판별 불가
-  if (total < 3) return "unknown";
+  if (total === 0) return "mixed"; // 신호 없으면 중립으로
 
   const ratio = brandScore / total;
   if (ratio >= 0.6) return "brand";   // 브랜드파: 60% 이상이 브랜드 신호
@@ -99,22 +103,12 @@ function calcPersona(log) {
 }
 
 /**
- * 성향 활성화까지 남은 점수를 계산합니다.
+ * 성향 활성화까지 남은 클릭 수 계산.
  * PersonaBadge의 "성향 분석 중 (N/3)" 표시에 사용.
- * calcPersona()와 동일한 가중치 공식을 사용합니다.
+ * 가중치 합이 아닌 실제 클릭한 상품 수를 반환.
  */
 function calcLogProgress(log) {
-  const {
-    brandClickCounts = {},
-    premiumClicks = 0,
-    avgAboveClicks = 0,
-    bulkClicks = 0,
-    lowUnitPriceClicks = 0,
-  } = log;
-  const repeatBrandClicks = Object.values(brandClickCounts).filter((c) => c >= 2).length;
-  const brandScore = repeatBrandClicks * 2 + premiumClicks * 2 + avgAboveClicks;
-  const volumeScore = bulkClicks + lowUnitPriceClicks * 2;
-  return brandScore + volumeScore;
+  return Math.min(log.totalClicks || 0, 3);
 }
 
 export default function App() {

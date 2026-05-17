@@ -11,13 +11,13 @@
  * [브랜드파 신호]
  *   +2  동일 브랜드 반복 클릭 (같은 브랜드 상품 2회 이상)
  *   +2  프리미엄 상품 클릭 (시장 평균가 130% 이상 상품)
- *   +1  고평점 상품 선호 (평점 4.7 이상 상품만 클릭)
+ *   +2  시장 평균가 이상 상품 클릭 (다나와는 평점/리뷰 수집 불가라 보완 가중치 강화)
  *
  * [용량파 신호]
- *   +2  대용량 상품 반복 클릭 (isBulk 상품 2회 이상)
+ *   +1  대용량 상품 클릭 (다나와 상품 대부분이 대용량이라 가중치 낮춤)
  *   +2  저단가 상품 선택 (시장 평균 단가의 80% 이하)
  *
- * 총합 4 미만 → Cold Start ("unknown") → 점수 배지 미노출
+ * Cold Start: totalClicks 3 미만 → "unknown" (가중치 합 아닌 실제 클릭 수 기준)
  *
  * ── GPT 점수 산출 ──
  * 성향별로 다른 평가 기준 프롬프트 + 리뷰 수 + 평점까지 반영
@@ -48,10 +48,15 @@ function detectPersonaType(userLog) {
     clickedBrands = [],
     brandClickCounts = {},
     premiumClicks = 0,
-    highRatingClicks = 0,
+    avgAboveClicks = 0,
     bulkClicks = 0,
     lowUnitPriceClicks = 0,
+    totalClicks = 0,
   } = userLog;
+
+  // Cold Start: 클릭 횟수 3회 미만이면 무조건 미판별
+  // (가중치만 보면 1클릭에 프리미엄+벌크가 겹쳐 즉시 활성화되는 문제 방지)
+  if (totalClicks < 3) return "unknown";
 
   // ── 브랜드파 점수 계산 ──
   // 동일 브랜드 반복 클릭: 같은 브랜드를 2번 이상 클릭했으면 강한 브랜드 선호 신호
@@ -59,27 +64,24 @@ function detectPersonaType(userLog) {
   const brandScore =
     repeatBrandClicks * 2 +  // 브랜드 반복 클릭 (강한 신호)
     premiumClicks * 2 +      // 프리미엄 상품 클릭 (강한 신호)
-    highRatingClicks * 1;    // 고평점 선호 (보조 신호) * 현제는 다나와 크롤링에서 평점 수집이 어려워서 0으로 고정.
+    avgAboveClicks * 2;      // 평균가 이상 클릭 — 다나와는 평점/리뷰 수집 불가라 가중치 강화
 
   // ── 용량파 점수 계산 ──
-  // bulkClicks 1번은 우연일 수 있으나, 2번 이상이면 명확한 선호 → 가중치 2로 강화
-  // (예: bulkClicks=1 → 점수 1, bulkClicks=2 → 점수 4, bulkClicks=3 → 점수 6)
+  // bulkClicks는 다나와 상품 대부분이 대용량이라 가중치 1로 평탄화 (자동 쏠림 방지)
   const volumeScore =
-    (bulkClicks >= 2 ? bulkClicks * 2 : bulkClicks) + // 대용량 반복 클릭 (강한 신호)
-    lowUnitPriceClicks * 2;                            // 저단가 선택 (강한 신호)
+    bulkClicks * 1 +              // 대용량 클릭 (보조 신호)
+    lowUnitPriceClicks * 2;       // 저단가 선택 (강한 신호)
 
   const total = brandScore + volumeScore;
-
-  // Cold Start: 신호가 충분히 쌓이지 않으면 점수 미노출
-  if (total < 4) return "unknown";
+  if (total === 0) return "mixed"; // 신호 없으면 중립으로
 
   // 브랜드 신호 비율로 성향 결정
-  // 0.65 이상: 브랜드 신호가 압도적 → 브랜드파
-  // 0.35 이하: 브랜드 신호가 미미  → 용량파
-  // 그 사이: 둘 다 섞임             → 복합형
+  // 0.6 이상: 브랜드 신호가 우세 → 브랜드파
+  // 0.4 이하: 브랜드 신호가 미미 → 용량파
+  // 그 사이: 둘 다 섞임          → 복합형
   const ratio = brandScore / total;
-  if (ratio >= 0.65) return "brand";
-  if (ratio <= 0.35) return "volume";
+  if (ratio >= 0.6) return "brand";
+  if (ratio <= 0.4) return "volume";
   return "mixed";
 }
 
