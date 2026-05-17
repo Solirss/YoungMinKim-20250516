@@ -65,9 +65,8 @@ app.get("/health", (req, res) => res.json({ status: "ok" }));
  * Response:
  * @returns {Object}
  *   - personaType  {string}  판별된 성향 ("brand"|"volume"|"mixed"|"unknown")
- *   - scoreSource  {string}  점수 출처 ("gpt"|"error"|"none")
- *   - scoreError   {string?} scoreSource === "error" 일 때만 포함 — 사유 메시지
- *   - products     {Array}   상품 배열 (scoreSource가 "gpt"가 아니면 valueScore=null)
+ *   - scoreSource  {string}  점수 출처 ("gpt"|"local"|"none") — 디버깅용
+ *   - products     {Array}   점수가 포함된 상품 배열
  *   - totalCount   {number}  반환된 상품 수
  */
 app.post("/api/products", async (req, res) => {
@@ -90,9 +89,9 @@ app.post("/api/products", async (req, res) => {
     const personaType = detectPersonaType(userLog || {});
 
     // ── 3단계: GPT 가성비 점수 산출 ──
-    // GPT API 실패 시 로컬 폴백 없이 scoreSource: "error"로 표시 (의도적 설계).
-    // 화면을 비우는 대신, 점수 없는 상품 목록 + 에러 메시지를 함께 반환.
-    const { products: scoredProducts, scoreSource, error: scoreError } = await scoreProductsWithGPT(
+    // GPT API 실패 시 scorer.js 내부에서 직관적 합산 알고리즘으로 자동 폴백
+    // scoreSource로 어느 경로를 탔는지 클라이언트가 확인 가능 (디버깅/관찰성)
+    const { products: scoredProducts, scoreSource } = await scoreProductsWithGPT(
       products,
       userLog || {},
       personaType
@@ -104,9 +103,8 @@ app.post("/api/products", async (req, res) => {
 
     res.json({
       personaType,                        // "brand"|"volume"|"mixed"|"unknown"
-      scoreSource,                        // "gpt"|"error"|"none"
-      ...(scoreError ? { scoreError } : {}), // GPT 실패 시에만 사유 포함
-      products: scoredProducts,           // valueScore, scoreTooltip 포함 (gpt 실패 시 둘 다 null)
+      scoreSource,                        // "gpt"|"local"|"none" — 프론트 콘솔에서 확인
+      products: scoredProducts,           // valueScore, scoreTooltip 포함
       totalCount: scoredProducts.length,
     });
 

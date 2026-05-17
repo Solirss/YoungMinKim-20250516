@@ -163,9 +163,6 @@ export default function App() {
   const [products, setProducts] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  // GPT 점수 산출이 실패했을 때 사용자에게 보여줄 안내 메시지
-  // (네트워크/서버 에러와 구분 — 상품은 받았지만 점수만 못 매긴 케이스)
-  const [scoreError, setScoreError] = useState(null);
 
   // 현재 활성화된 카테고리 탭 레이블 (스타일링용)
   const [activeCategory, setActiveCategory] = useState(null);
@@ -321,7 +318,6 @@ export default function App() {
   const fetchProducts = useCallback(async (keyword, category) => {
     setLoading(true);
     setError(null);
-    setScoreError(null);
     setActiveCategory(category);
     try {
       const res = await fetch(`${API_BASE}/api/products`, {
@@ -334,15 +330,10 @@ export default function App() {
       setProducts(data.products);
 
       // 디버깅용 로그
-      //   "gpt"   → GPT API 정상 응답 (성공 케이스)
-      //   "error" → GPT 실패, 점수 미산출 (scoreError 상태로 배너 노출)
-      //   "none"  → Cold Start, 아직 점수 산출 안 함
+      //   "gpt"   → GPT API 정상 응답
+      //   "local" → GPT 실패, 직관적 합산 알고리즘으로 폴백
+      //   "none"  → Cold Start, 점수 산출 안 함
       console.log(`[점수 출처] personaType: ${data.personaType}, scoreSource: ${data.scoreSource}`);
-
-      // GPT 점수 산출이 실패한 경우 안내 배너 노출
-      if (data.scoreSource === "error") {
-        setScoreError(data.scoreError || "AI 점수 산출에 실패했어요. 잠시 후 다시 시도해주세요.");
-      }
     } catch (e) {
       setError("상품을 불러오지 못했어요. 잠시 후 다시 시도해주세요.");
     } finally {
@@ -501,16 +492,8 @@ export default function App() {
           </div>
         )}
 
-        {/* 에러 상태 (네트워크/서버 5xx) */}
+        {/* 에러 상태 */}
         {error && <div className="error-state">{error}</div>}
-
-        {/* GPT 점수 산출 실패 안내 (상품은 받았지만 점수만 못 받은 케이스) */}
-        {!loading && scoreError && products.length > 0 && (
-          <div className="score-error-banner">
-            ⚠️ AI 가성비 점수를 산출하지 못했어요. 상품 정보는 정상이지만 점수 배지는 표시되지 않습니다.
-            <span className="score-error-detail">사유: {scoreError}</span>
-          </div>
-        )}
 
         {/* 상품 리스트: 로딩 완료 + 상품 있을 때만 표시 */}
         {!loading && products.length > 0 && (

@@ -102,7 +102,7 @@ function detectPersonaType(userLog) {
  * @param {Array}  products    - 상품 배열 (priceHistory, marketAvgPricePerUnit 등 포함)
  * @param {Object} userLog     - 유저 행동 로그
  * @param {string} personaType - 판별된 성향 타입
- * @returns {{ products: Array, scoreSource: "gpt"|"error"|"none", error?: string }}
+ * @returns {{ products: Array, scoreSource: "gpt"|"local"|"none" }}
  */
 async function scoreProductsWithGPT(products, userLog, personaType) {
   // Cold Start인 경우 GPT 점수 산출 없이 null 반환
@@ -217,31 +217,169 @@ tooltip 규칙: 25자 이내, 핵심 수치 2개 포함 (예: "최저가 대비 
     return { products: scoredProducts, scoreSource: "gpt" };
 
   } catch (err) {
-    // ── GPT 실패 처리 ──
-    // OpenAI API 실패 케이스:
-    //   - API 키 미설정 / 잔액 부족
-    //   - Rate limit
-    //   - JSON 파싱 실패 (GPT가 룰을 안 따른 경우)
-    //   - 네트워크 타임아웃
-    //
-    // 의도적으로 로컬 폴백을 두지 않음:
-    //   결정론적 산식은 GPT가 잡아내는 맥락(상품명·브랜드 등)을 못 보고,
-    //   유저가 "이상한 점수가 같은 화면에 섞이는" 경험을 더 싫어함.
-    //   차라리 점수를 비우고 "AI 점수 산출 실패"를 명시하는 게 신뢰 측면에서 우월.
-    // → 상품은 점수 없이(valueScore: null) 반환하고, scoreSource: "error"로 표시.
-    //   프론트는 이 신호를 받으면 안내 배너 + 카드는 일반 표시로 처리.
-    console.error("GPT 점수 산출 실패:", err.message);
+    // ── GPT 실패 시 로컬 폴백 ──
+    // OpenAI API 실패 케이스(잘못된 키, 잔액 부족, Rate limit, 타임아웃 등) 발생 시
+    // calcLocalScore로 자동 전환. 점수가 안 나오면 유저가 아예 비교를 못 하므로
+    // "정확하진 않더라도 일단 가성비 신호는 주자"는 방향.
+    // scoreSource: "local"로 표시해 디버깅에서 GPT 실패 여부 추적 가능.
+    console.error("GPT 점수 산출 실패, 로컬 폴백:", err.message);
     const scoredProducts = products.map((p) => ({
       ...p,
-      valueScore: null,
-      scoreTooltip: null,
+      valueScore: calcLocalScore(p, personaType),
+      scoreTooltip: getLocalTooltip(p, personaType),
     }));
-    return {
-      products: scoredProducts,
-      scoreSource: "error",
-      error: err.message || "GPT 점수 산출에 실패했습니다.",
-    };
+    return { products: scoredProducts, scoreSource: "local" };
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 로컬 폴백 점수 — 직관적 합산 방식
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 설계 원칙: "누가 봐도 점수 분해가 가능하게."
+//
+// 3가지 항목, 각 0~33점, 합산 후 99로 cap:
+//   1. 평점 점수   — 평점이 좋은가?
+//   2. 리뷰 점수   — 신뢰할 만큼 리뷰가 많은가?
+//   3. 가격 점수   — 가격이 합리적인가? (성향별 기준 다름)
+//
+// 총점 예시:
+//   "평점 25 + 리뷰 28 + 가격 22 = 75점"
+//   → 어느 항목이 점수에 기여했는지 한눈에 보임 (검증·디버깅 쉬움)
+//
+// 이전 알고리즘(가중치 비율 + isPremium 보너스 + 추세 보정 등)은 복잡해서
+// "왜 이 점수?"에 답하기 어려웠음. 단순 합산으로 회귀.
+
+/**
+ * 로컬 폴백 메인 함수 — 3개 항목을 합산
+ */
+function calcLocalScore(product, personaType) {
+  const ratingScore = calcRatingScore(product);          // 0~33
+  const reviewScore = calcReviewScore(product);          // 0~33
+  const priceScore = calcPriceScore(product, personaType); // 0~33
+  return Math.min(99, ratingScore + reviewScore + priceScore);
+}
+
+/**
+ * 평점 점수 (0~33)
+ * 4.0 → 0점, 5.0 → 33점 선형 매핑.
+ * 4.0 미만은 0점 (다나와 상품 거의 모두 4.0 이상이라 사실상 4.0~5.0 구간만 사용).
+ */
+function calcRatingScore(product) {
+  if (!product.rating) return 0;
+  return Math.max(0, Math.min(33, Math.round((product.rating - 4.0) * 33)));
+}
+
+/**
+ * 리뷰 점수 (0~33) — log10 스케일
+ * 0개 → 0점, 100개 → ~16점, 1000개 → ~25점, 10000개 → 33점.
+ * log를 쓰는 이유: 리뷰 100→1000은 의미 크지만 1만→10만은 의미가 적어 평탄화.
+ */
+function calcReviewScore(product) {
+  if (!product.reviews) return 0;
+  return Math.min(33, Math.round((Math.log10(product.reviews + 1) / 4) * 33));
+}
+
+/**
+ * 가격 점수 (0~33) — 성향별로 기준만 다름
+ * - brand:  3개월 최저가 대비 (지금이 살 타이밍인가)
+ * - volume: 단가 vs 시장 평균 단가 (단위당 가격 합리적인가)
+ * - mixed:  현재가 vs 시장 평균가 (전체 가격이 합리적인가)
+ */
+function calcPriceScore(product, personaType) {
+  if (personaType === "brand") return calcTimingScore(product);
+  if (personaType === "volume") return calcUnitPriceScore(product);
+  return calcMarketPriceScore(product);
+}
+
+// brand — 가격 타이밍 점수: 3개월 최저가에 가까울수록 만점
+function calcTimingScore(product) {
+  const history = product.priceHistory || [];
+  if (history.length < 2) return 17; // 정보 부족 → 중간 점수
+
+  const prices = history.map((h) => h.price);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  if (max === min) return 17; // 변동 없음 → 중간
+
+  // position 0 = 최저가, 1 = 최고가 → 뒤집어서 점수화
+  const position = (product.price - min) / (max - min);
+  return Math.max(0, Math.min(33, Math.round((1 - position) * 33)));
+}
+
+// volume — 단가 점수: 시장 평균 단가 대비 비율
+function calcUnitPriceScore(product) {
+  if (!product.pricePerUnit || !product.marketAvgPricePerUnit) return 17;
+  // ratio = 시장 평균 단가 / 이 상품 단가
+  //   ratio = 1 (평균과 동일) → 17점
+  //   ratio = 2 (절반 가격)   → 33점 (cap)
+  //   ratio = 0.5 (2배 비쌈)  → 0점 근처
+  const ratio = product.marketAvgPricePerUnit / product.pricePerUnit;
+  return Math.max(0, Math.min(33, Math.round(17 + (ratio - 1) * 16)));
+}
+
+// mixed — 시장 평균가 대비 점수
+function calcMarketPriceScore(product) {
+  if (!product.marketAvgPrice) return 17;
+  // ratio = 시장 평균가 / 현재가
+  //   ratio = 1 (평균과 동일) → 17점
+  //   ratio = 1.3 (평균보다 30% 저렴) → 33점
+  //   ratio = 0.7 (평균보다 30% 비쌈) → 0점 근처
+  const ratio = product.marketAvgPrice / product.price;
+  return Math.max(0, Math.min(33, Math.round(17 + (ratio - 1) * 53)));
+}
+
+/**
+ * 로컬 점수 툴팁 — 가장 직관적인 항목 2~3개를 사람 친화적으로 표시
+ *
+ * 형태: "{가격 정보} · {평점} · {리뷰 수}"
+ * 예시: "최저가 +3% · 평점 4.7 · 리뷰 1.2만"
+ */
+function getLocalTooltip(product, personaType) {
+  const parts = [];
+
+  // 가격 정보 (성향별로 다름)
+  const priceStr = formatPriceInsight(product, personaType);
+  if (priceStr) parts.push(priceStr);
+
+  // 평점
+  if (product.rating) parts.push(`평점 ${product.rating.toFixed(1)}`);
+
+  // 리뷰 수
+  if (product.reviews) parts.push(formatReviewCount(product.reviews));
+
+  return parts.join(" · ") || "정보 부족";
+}
+
+function formatPriceInsight(product, personaType) {
+  if (personaType === "brand") {
+    const history = product.priceHistory || [];
+    if (history.length < 2) return "";
+    const min = Math.min(...history.map((h) => h.price));
+    const diff = Math.round(((product.price - min) / min) * 100);
+    return diff <= 2 ? "3달 최저가" : `최저가 +${diff}%`;
+  }
+  if (personaType === "volume") {
+    if (!product.pricePerUnit || !product.marketAvgPricePerUnit) return "";
+    const saving = Math.round(
+      ((product.marketAvgPricePerUnit - product.pricePerUnit) / product.marketAvgPricePerUnit) * 100
+    );
+    if (saving > 0) return `단가 ${saving}% 저렴`;
+    if (saving < 0) return `단가 ${Math.abs(saving)}% 비쌈`;
+    return "평균 단가";
+  }
+  // mixed
+  if (!product.marketAvgPrice) return "";
+  const saving = Math.round(((product.marketAvgPrice - product.price) / product.marketAvgPrice) * 100);
+  if (saving > 0) return `평균보다 ${saving}% 저렴`;
+  if (saving < 0) return `평균보다 ${Math.abs(saving)}% 비쌈`;
+  return "시장 평균가";
+}
+
+function formatReviewCount(reviews) {
+  if (reviews >= 10000) return `리뷰 ${(reviews / 10000).toFixed(1)}만`;
+  if (reviews >= 1000) return `리뷰 ${(reviews / 1000).toFixed(1)}천`;
+  return `리뷰 ${reviews}`;
 }
 
 module.exports = { detectPersonaType, scoreProductsWithGPT };

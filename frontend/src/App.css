@@ -265,26 +265,6 @@ img { display: block; max-width: 100%; }
   font-size: 14px;
 }
 
-/* GPT 점수 산출 실패 안내 — 상품은 받았지만 점수만 못 받은 경우 */
-.score-error-banner {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 14px 16px;
-  margin-bottom: 16px;
-  background: #fffaf0;
-  border: 1px solid #f5d97a;
-  border-radius: var(--radius);
-  color: #8a6500;
-  font-size: 13px;
-  line-height: 1.45;
-}
-.score-error-detail {
-  font-size: 11px;
-  color: #a98700;
-  opacity: 0.8;
-}
-
 /* ─── Persona Banner ─── */
 .persona-banner {
   display: flex;

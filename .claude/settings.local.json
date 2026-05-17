@@ -3,7 +3,8 @@
     "allow": [
       "Bash(cd /tmp && echo \"=== 별점 컨텍스트 \\(5개\\) ===\" && grep -o '.\\\\{60\\\\}별점.\\\\{60\\\\}' danawa_raw.html | head -5 && echo \"\" && echo \"=== star_ class 패턴 ===\" && grep -oE 'class=\"[^\"]*star[^\"]*\"' danawa_raw.html | sort -u | head -10 && echo \"\" && echo \"=== rating class 패턴 ===\" && grep -oE 'class=\"[^\"]*rating[^\"]*\"' danawa_raw.html | sort -u | head -10)",
       "Bash(OPENAI_API_KEY=dummy node -e ' *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(OPENAI_API_KEY=invalid-key node -e ' *)"
     ]
   }
 }
