@@ -305,8 +305,13 @@ export default function App() {
    * 상품을 장바구니에 추가합니다.
    * 이미 있는 상품이면 수량 +1, 없으면 qty: 1로 새로 추가.
    * 추가 즉시 카트 드로어를 엽니다.
+   *
+   * 장바구니 담기도 카드 클릭과 동등한 "관심 신호"로 보고 행동 로그를 업데이트합니다.
+   * (updateLog의 loggedSignals Set이 productId+signalType 단위 중복을 막아주므로,
+   *  카드 클릭 후 같은 상품을 담아도 이중 카운트되지 않음)
    */
   const addToCart = useCallback((product) => {
+    updateLog(product);
     setCart((prev) => {
       const existing = prev.find((i) => i.id === product.id);
       if (existing) {
@@ -315,7 +320,7 @@ export default function App() {
       return [...prev, { ...product, qty: 1 }];
     });
     setCartOpen(true);
-  }, []);
+  }, [updateLog]);
 
   // 장바구니에서 상품 제거
   const removeFromCart = useCallback(
