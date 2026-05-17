@@ -163,8 +163,12 @@ async function scoreProductsWithGPT(products, userLog, personaType) {
   // 점수 규칙을 명시적으로 강제하는 이유:
   //   GPT는 기본적으로 "긍정 편향"이 있어 자유롭게 점수를 매기게 두면 대부분 80~95점에 몰림
   //   → 상품 간 변별력 확보를 위해 점수 분포 가이드와 상·하한 룰을 박아넣음
-  // tooltip을 같은 JSON에 받는 이유:
-  //   점수만 받고 별도로 툴팁 호출하면 API 요청 2배 + 일관성 깨짐
+  //
+  // "전부 채점" 강제 + 다중 예시:
+  //   초기에는 예시가 1개 객체뿐이라 GPT가 "한 개만 답하면 되겠구나"로 잘못 해석해
+  //   첫 상품만 점수 매기고 나머지를 빠뜨리는 버그가 있었음.
+  //   → expected_count 명시 + 예시에 여러 개 보여줘서 누락 방지.
+  const productCount = productSummaries.length;
   const prompt = `당신은 한국 이커머스 가성비 분석 전문가입니다.
 
 ${personaContext}
@@ -177,13 +181,20 @@ ${personaContext}
 - 시장 평균보다 단가 비싼 상품 → 45점 이하
 - 점수 분포 예시: 12, 28, 45, 61, 74, 88
 
+★ 매우 중요: 반드시 ${productCount}개 상품 전부에 대해 점수를 매겨야 합니다.
+   누락된 index가 하나라도 있으면 안 됩니다. (index 0부터 ${productCount - 1}까지 모두 포함)
+
 상품 데이터:
 ${JSON.stringify(productSummaries, null, 2)}
 
-반드시 아래 JSON만 응답 (마크다운 없이):
-{"scores":[{"index":0,"score":74,"tooltip":"최저가 대비 3% · 리뷰 1.2만개"}]}
+반드시 아래 JSON만 응답 (마크다운 없이, scores 배열에 정확히 ${productCount}개 객체 포함):
+{"scores":[
+  {"index":0,"score":74,"tooltip":"최저가 대비 3% · 리뷰 1.2만"},
+  {"index":1,"score":52,"tooltip":"평균 단가 · 평점 4.5"},
+  {"index":2,"score":28,"tooltip":"최고가 +12% · 리뷰 적음"}
+]}
 
-tooltip 규칙: 25자 이내, 핵심 수치 2개 포함 (예: "최저가 대비 5%" + "100g당 20% 저렴").`;
+tooltip 규칙: 25자 이내, 핵심 수치 2개 포함 (예: "최저가 대비 5%" + "단가 20% 저렴").`;
 
   try {
     const completion = await openai.chat.completions.create({
@@ -194,17 +205,30 @@ tooltip 규칙: 25자 이내, 핵심 수치 2개 포함 (예: "최저가 대비 
       //   너무 높으면(0.7+) 같은 상품인데 새로고침마다 점수가 크게 달라져 신뢰 깨짐
       //   0.3은 OpenAI 권장 "분류·평가 작업" 수준
       temperature: 0.3,
-      // max_tokens 900:
-      //   상품 10개 × {"index":i,"score":nn,"tooltip":"~25자"} ≈ 약 70토큰/항목
-      //   여유 마진 포함해 900으로 (응답 잘림 방지)
-      max_tokens: 900,
+      // max_tokens 1500:
+      //   한국어 툴팁은 영어보다 토큰을 더 많이 먹음 (한 글자 ≈ 1.5~2 토큰)
+      //   25자 한국어 툴팁 = ~50토큰, 상품 10개면 800+ 토큰
+      //   여유 있게 1500으로 두어 응답 잘림 방지
+      max_tokens: 1500,
+      // JSON 모드 강제: gpt-4o-mini는 response_format을 지원해 응답을 항상 JSON으로 강제 가능
+      // → 코드 펜스(```json)나 자유 텍스트 섞일 일이 없어짐
+      response_format: { type: "json_object" },
     });
 
     // ── GPT 응답 파싱 ──
-    // GPT가 가끔 ```json ... ``` 코드 펜스를 붙이는 경우가 있어 제거
-    // (프롬프트에 "마크다운 없이"를 명시했지만 100% 신뢰할 수 없음)
+    // GPT가 가끔 ```json ... ``` 코드 펜스를 붙이는 경우가 있어 제거 (안전망)
     const raw = completion.choices[0].message.content.trim().replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(raw);
+
+    // 누락 감지: GPT가 일부 인덱스를 빼먹은 경우 서버 로그로 추적 가능하게
+    const returnedIndexes = new Set((parsed.scores || []).map((s) => s.index));
+    const missingIndexes = [];
+    for (let i = 0; i < productCount; i++) {
+      if (!returnedIndexes.has(i)) missingIndexes.push(i);
+    }
+    if (missingIndexes.length > 0) {
+      console.warn(`[GPT 응답 누락] 채점되지 않은 index: ${missingIndexes.join(", ")} / 전체 ${productCount}개 중 ${returnedIndexes.size}개만 반환`);
+    }
 
     // GPT가 반환한 점수를 원래 상품 배열의 순서대로 매핑
     // .find()로 인덱스 매칭하는 이유: GPT가 순서를 바꿔서 반환할 수도 있어 안전
